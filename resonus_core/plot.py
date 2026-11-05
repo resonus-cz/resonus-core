@@ -94,58 +94,125 @@ class MplPlotView:
         self._canvas: Any = None
         self._parent: MplPlotView | None = None
         self._panels: list[MplPlotView] = []
+        # number of panels in each row below this view, top down (add_row)
+        self._rows: list[int] = []
+        self._width_ratios: list[list[float] | None] = []
         self._brand: Any = style.add_brand(self.figure, brand_text) if brand else None
 
     def add_panel(self, height_ratios: Sequence[float]) -> MplPlotView:
         """Add a view with its own axes below this view's, in the same figure.
 
-        The figure is laid out again as one column of ``n = len(self._panels) + 2`` rows
-        (this view on top, earlier panels, the new panel at the bottom): ``gs =
-        self.figure.add_gridspec(n, 1, height_ratios=list(height_ratios))``; the
-        existing axes get ``ax.set_subplotspec(gs[k])`` and ``ax.tick_params(
-        labelbottom=False)`` (only the lowest axes label the shared x axis); the new axes
-        are ``self.figure.add_subplot(gs[n - 1], sharex=self.axes)`` created inside the
-        style's ``rc_context``. The returned view (built with :meth:`_panel`) has the same
-        ``figure``, its own traces and legend; its :meth:`widget` is this view's canvas
-        and its :meth:`refresh` redraws it. On a panel, the call is passed on to the view
-        it was added to. Ends with :meth:`refresh`.
-
-        Parameters
-        ----------
-        height_ratios
-            Relative heights of all rows, top down, one per view after adding (``n``
-            values), each > 0. Example: ``view.add_panel((2, 1))`` gives a panel half
-            the height of the view above it.
+        ``self.add_row(height_ratios, 1)[0]``: one full-width panel in a new bottom row
+        (resonus-room D-22). Example: ``view.add_panel((2, 1))`` gives a panel half the
+        height of the view above it.
 
         Raises
         ------
         ValueError
-            ``f"height_ratios needs {n} values, one per panel"``;
-            ``"height_ratios must be > 0"``.
+            From :meth:`add_row`.
+        """
+        return self.add_row(height_ratios, 1)[0]
+
+    def add_row(
+        self,
+        height_ratios: Sequence[float],
+        columns: int = 1,
+        width_ratios: Sequence[float] | None = None,
+    ) -> list[MplPlotView]:
+        """Add a row of ``columns`` panels side by side below the existing rows.
+
+        One figure, one toolbar (resonus-room D-29: C50/C80 above D50 and Ts side by
+        side). On a panel, the call is passed on to the view it was added to (as
+        :meth:`add_panel`). Steps on the top view:
+
+        1. Validate (errors below); ``n = len(self._rows) + 2`` rows after adding (this
+           view's row, the earlier rows, the new one).
+        2. Inside the style's ``rc_context`` (as :meth:`add_panel` did): ``gs =
+           self.figure.add_gridspec(n, 1, height_ratios=ratios)``. Row 0 is this view:
+           ``self.axes.set_subplotspec(gs[0])``. Row ``r >= 1`` with ``m`` panels (from
+           ``self._rows``, the new row last): for ``m == 1`` its axes get ``gs[r]``; for
+           ``m > 1``: ``sub = gs[r].subgridspec(1, m, width_ratios=w)`` (``w`` the row's
+           stored width ratios, None for equal widths) and panel ``k`` of the row gets
+           ``sub[0, k]``. The panels are ``self._panels`` in row order, left to right.
+        3. New axes: ``self.figure.add_subplot(spec, sharex=self.axes)`` for each new
+           position, each wrapped with :meth:`_panel` and appended to ``self._panels``;
+           ``self._rows.append(columns)``, ``self._width_ratios.append(None if
+           width_ratios is None else list of floats)``.
+        4. Tick labels of the shared x axis: ``ax.tick_params(labelbottom=False)`` on every
+           axes not in the last row; the last row's axes keep theirs.
+        5. :meth:`refresh`; return the new panels, left to right.
+
+        Parameters
+        ----------
+        height_ratios
+            Relative heights of all rows, top down, after adding (``n`` values), each > 0.
+        columns
+            Number of panels in the new row, >= 1.
+        width_ratios
+            Relative widths of the new row's panels (``columns`` values, each > 0); None:
+            equal widths.
+
+        Returns
+        -------
+        list of MplPlotView
+            The new panels, left to right.
+
+        Raises
+        ------
+        ValueError
+            ``f"height_ratios needs {n} values, one per row"``; ``"height_ratios must be >
+            0"``; ``"columns must be >= 1"``; ``f"width_ratios needs {columns} values"``;
+            ``"width_ratios must be > 0"`` (NaN is rejected as well). Nothing is changed on
+            an error.
         """
         if self._parent is not None:
-            return self._parent.add_panel(height_ratios)
+            return self._parent.add_row(height_ratios, columns, width_ratios)
+        n = len(self._rows) + 2
         ratios = [float(r) for r in height_ratios]
-        if len(ratios) != len(self._panels) + 2:
-            raise ValueError(f"height_ratios needs {len(self._panels) + 2} values, one per panel")
-        if any(not r > 0 for r in ratios):  # also rejects NaN
+        if len(ratios) != n:
+            raise ValueError(f"height_ratios needs {n} values, one per row")
+        if any(not r > 0 for r in ratios):
             raise ValueError("height_ratios must be > 0")
+        if columns < 1:
+            raise ValueError("columns must be >= 1")
+        widths = None
+        if width_ratios is not None:
+            widths = [float(w) for w in width_ratios]
+            if len(widths) != columns:
+                raise ValueError(f"width_ratios needs {columns} values")
+            if any(not w > 0 for w in widths):
+                raise ValueError("width_ratios must be > 0")
         import matplotlib as mpl
 
         with mpl.rc_context(cast(Any, style.mpl_rc())):
-            n = len(self._panels) + 2
             gs = self.figure.add_gridspec(n, 1, height_ratios=ratios)
-            # reposition existing axes
-            for k, ax in enumerate([self.axes] + [p.axes for p in self._panels]):
-                ax.set_subplotspec(gs[k])
-                if k < n - 1:
-                    ax.tick_params(labelbottom=False)
-            # new panel
-            new_ax = self.figure.add_subplot(gs[n - 1], sharex=self.axes)
-            panel = self._panel(self, new_ax)
-            self._panels.append(panel)
-            self.refresh()
-            return panel
+            rows = self._rows + [columns]
+            wrs = self._width_ratios + [widths]
+            self.axes.set_subplotspec(gs[0])
+            self.axes.tick_params(labelbottom=False)
+            k = 0
+            new: list[MplPlotView] = []
+            for r, (m, w) in enumerate(zip(rows, wrs, strict=True), start=1):
+                if m == 1:
+                    specs = [gs[r]]
+                else:
+                    sub = gs[r].subgridspec(1, m, width_ratios=w)
+                    specs = [sub[0, c] for c in range(m)]
+                for spec in specs:
+                    if k < len(self._panels):
+                        ax = self._panels[k].axes
+                        ax.set_subplotspec(spec)
+                    else:
+                        ax = self.figure.add_subplot(spec, sharex=self.axes)
+                        new.append(self._panel(self, ax))
+                    if r < n - 1:
+                        ax.tick_params(labelbottom=False)
+                    k += 1
+            self._panels.extend(new)
+            self._rows.append(columns)
+            self._width_ratios.append(widths)
+        self.refresh()
+        return new
 
     @classmethod
     def _panel(cls, parent: MplPlotView, axes: Any) -> MplPlotView:
@@ -153,7 +220,8 @@ class MplPlotView:
 
         ``view = cls.__new__(cls)`` (skips ``__init__``), then set ``figure =
         parent.figure``, ``axes``, ``_lines = {}``, ``_canvas = None``, ``_parent =
-        parent``, ``_panels = []``, ``_brand = None``.
+        parent``, ``_panels = []``, ``_rows = []``, ``_width_ratios = []``, ``_brand =
+        None``.
         """
         view = cls.__new__(cls)
         view.figure = parent.figure
@@ -162,6 +230,8 @@ class MplPlotView:
         view._canvas = None
         view._parent = parent
         view._panels = []
+        view._rows = []
+        view._width_ratios = []
         view._brand = None
         return view
 
@@ -184,7 +254,7 @@ class MplPlotView:
         self.refresh()
 
     def panels(self) -> list[MplPlotView]:
-        """Return the views added below this one by :meth:`add_panel`, top down.
+        """Return the views added by :meth:`add_panel` / :meth:`add_row`, by row, left to right.
 
         A copy of ``self._panels``; on a panel, ``self._parent.panels()``.
         """

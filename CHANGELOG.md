@@ -3,6 +3,14 @@
 Semantic versioning: patch = fixes, minor = additions, major = breaking API changes.
 Apps depend on a pinned tag; upgrading is a deliberate change in the app.
 
+## 0.9.0 (2026-11-05)
+Panels side by side (resonus-room D-29: C50/C80 above D50 and Ts).
+
+- `MplPlotView.add_row(height_ratios, columns=1, width_ratios=None)`: a row of panels
+  side by side below the existing rows, in the same figure with one toolbar; only the
+  last row labels the shared x axis. `add_panel` is the one-column case (its error
+  message now reads "one per row").
+
 ## 0.8.1 (2026-11-05)
 First public release (no API change).
 
