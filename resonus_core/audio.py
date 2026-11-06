@@ -18,6 +18,10 @@ from numpy.typing import ArrayLike, NDArray
 # Block length of playrec_blocks in samples (design choice, resonus-room D-21): 1024
 # samples are 21 ms at 48 kHz, so a level meter fed from the blocks updates ~47 times/s.
 STREAM_BLOCK_SIZE = 1024
+# Extra wait for a stream to finish beyond the signal length, s (design choice,
+# resonus-room Q-C10): a device that stops calling back ends the call with an error
+# instead of hanging.
+STREAM_FINISH_TIMEOUT = 10.0
 
 BlockCallback = Callable[[NDArray[np.float64]], None]
 
@@ -178,40 +182,32 @@ class SounddeviceIO:
         return len(self._output_channels)
 
     def playrec(self, signal: ArrayLike) -> NDArray[np.float64]:
-        """Play and record simultaneously (blocking); returns ``(n, n_inputs)``."""
-        import sounddevice
+        """Play and record simultaneously (blocking); returns ``(n, n_inputs)``.
 
-        x = _as_output_array(signal, self.n_outputs)
-        self._check_aborted()
-        result = sounddevice.playrec(
-            x,
-            samplerate=self._sample_rate,
-            device=self._device if self._pair is None else self._pair,
-            input_mapping=list(self._input_channels),
-            output_mapping=list(self._output_channels),
-            dtype="float64",
-            blocking=True,
-        )
-        self._check_aborted()
-        return np.asarray(result, dtype=np.float64)
+        ``playrec_blocks(signal, lambda _b: None)`` with :data:`STREAM_BLOCK_SIZE`: its own
+        ``sounddevice.Stream``, which :meth:`abort` ends at the next block (resonus-room
+        Q-C10; ``sounddevice.playrec`` is not used).
+        """
+        return self.playrec_blocks(signal, lambda _b: None)
 
     def rec(self, n_samples: int) -> NDArray[np.float64]:
-        """Record (blocking); returns ``(n_samples, n_inputs)``."""
-        import sounddevice
+        """Record (blocking) on its own ``sounddevice.InputStream``; ``(n_samples, n_inputs)``.
 
+        As :meth:`playrec_blocks` without output: ``InputStream(channels=max(
+        input_channels), dtype="float32", blocksize=STREAM_BLOCK_SIZE, samplerate,
+        device=device`` (or the input device of a pair) ``, callback, finished_callback)``;
+        ``callback(indata, frames, time, status)``.
+
+        Raises
+        ------
+        ValueError
+            ``"n_samples must be > 0"``.
+        MeasurementAborted, RuntimeError
+            As :meth:`playrec_blocks`.
+        """
         if n_samples <= 0:
             raise ValueError("n_samples must be > 0")
-        self._check_aborted()
-        result = sounddevice.rec(
-            n_samples,
-            samplerate=self._sample_rate,
-            device=self._device if self._pair is None else self._pair[0],
-            mapping=list(self._input_channels),
-            dtype="float64",
-            blocking=True,
-        )
-        self._check_aborted()
-        return np.asarray(result, dtype=np.float64)
+        return self._run_stream(None, n_samples, lambda _b: None, STREAM_BLOCK_SIZE)
 
     def playrec_blocks(
         self, signal: ArrayLike, on_block: BlockCallback, block_size: int = STREAM_BLOCK_SIZE
@@ -221,8 +217,13 @@ class SounddeviceIO:
         A raw stream has no channel mapping and takes float32 samples, so: ``x =
         _as_output_array(signal, n_outputs)``; the stream opens ``channels=(max(
         input_channels), max(output_channels))``, ``dtype="float32"``, ``blocksize=
-        block_size``, ``samplerate``, ``device`` as :meth:`playrec`, a ``callback`` and
-        ``finished_callback`` that sets a ``threading.Event``; the call waits for it.
+        block_size``, ``samplerate``, ``device`` (the device, or the pair ``(input_device,
+        output_device)``), a ``callback`` and ``finished_callback`` that sets a
+        ``threading.Event``. Inside the ``with`` block the call waits for the event at most
+        ``n / sample_rate + STREAM_FINISH_TIMEOUT`` s (closing the stream earlier would
+        stop playback; read the module constant at call time). After the stream closed:
+        :meth:`_check_aborted`; if the event was not set, ``RuntimeError("audio stream did
+        not finish")``; then the kept ``on_block`` exception, if any.
 
         ``callback(indata, outdata, frames, time, status)``, with ``i`` samples done so
         far and ``k = min(frames, n - i)``: ``outdata`` zero, then ``outdata[:k, o - 1] =
@@ -237,63 +238,98 @@ class SounddeviceIO:
         ------
         ValueError
             ``"block_size must be > 0"``; from :func:`_as_output_array`.
+        MeasurementAborted
+            If :meth:`abort` was called before or during the call (no stream is opened
+            when it was called before).
+        RuntimeError
+            ``"audio stream did not finish"`` (timeout), or the ``on_block`` exception.
         """
         if block_size <= 0:
             raise ValueError("block_size must be > 0")
+        x = _as_output_array(signal, self.n_outputs)
+        return self._run_stream(x, x.shape[0], on_block, block_size)
+
+    def _run_stream(
+        self,
+        x: NDArray[np.float64] | None,
+        n: int,
+        on_block: BlockCallback,
+        block_size: int,
+    ) -> NDArray[np.float64]:
+        """Run the stream of :meth:`playrec_blocks` (``x`` given) or :meth:`rec` (None).
+
+        Shared by both: ``n`` samples, recording ``(n, n_inputs)`` float64, callback,
+        wait, timeout and error order as described in :meth:`playrec_blocks`. With ``x``
+        None it opens ``sounddevice.InputStream`` (``channels=max(input_channels)``,
+        device the device or the input device of a pair) whose callback is
+        ``callback(indata, frames, time, status)`` and writes no output.
+        """
         import sounddevice
 
-        x = _as_output_array(signal, self.n_outputs)
         self._check_aborted()
-        n = x.shape[0]
         recording = np.zeros((n, self.n_inputs), dtype=np.float64)
         pos = [0]
         in_idx = [c - 1 for c in self._input_channels]
-        exc = None
+        exc: list[Exception] = []
         done = threading.Event()
 
-        def callback(
-            indata: NDArray[np.float32],
-            outdata: NDArray[np.float32],
-            frames: int,
-            _time: Any,
-            _status: Any,
+        def process(
+            indata: NDArray[np.float32], outdata: NDArray[np.float32] | None, frames: int
         ) -> None:
             i = pos[0]
             k = min(frames, n - i)
-            outdata[:] = 0
+            if outdata is not None:
+                outdata[:] = 0
             if self._aborted.is_set():
                 raise sounddevice.CallbackAbort
-            for j, o in enumerate(self._output_channels):
-                outdata[:k, o - 1] = x[i : i + k, j]
+            if outdata is not None and x is not None:
+                for j, o in enumerate(self._output_channels):
+                    outdata[:k, o - 1] = x[i : i + k, j]
             block = indata[:k, in_idx].astype(np.float64, copy=False)
             recording[i : i + k, :] = block
             pos[0] += k
             try:
                 on_block(block)
             except Exception as e:
-                nonlocal exc
-                exc = e
+                exc.append(e)
                 raise sounddevice.CallbackAbort from None
             if pos[0] >= n:
                 raise sounddevice.CallbackStop
 
-        def finished() -> None:
-            done.set()
+        def duplex(indata: Any, outdata: Any, frames: int, _time: Any, _status: Any) -> None:
+            process(indata, outdata, frames)
 
-        with sounddevice.Stream(
-            channels=(max(self._input_channels), max(self._output_channels)),
-            dtype="float32",
-            blocksize=block_size,
-            samplerate=self._sample_rate,
-            device=self._device if self._pair is None else self._pair,
-            callback=callback,
-            finished_callback=finished,
-        ):
-            done.wait()  # closing the stream earlier would stop playback
+        def input_only(indata: Any, frames: int, _time: Any, _status: Any) -> None:
+            process(indata, None, frames)
 
+        common = {
+            "dtype": "float32",
+            "blocksize": block_size,
+            "samplerate": self._sample_rate,
+            "finished_callback": done.set,
+        }
+        if x is not None:
+            stream = sounddevice.Stream(
+                channels=(max(self._input_channels), max(self._output_channels)),
+                device=self._device if self._pair is None else self._pair,
+                callback=duplex,
+                **common,
+            )
+        else:
+            stream = sounddevice.InputStream(
+                channels=max(self._input_channels),
+                device=self._device if self._pair is None else self._pair[0],
+                callback=input_only,
+                **common,
+            )
+        timeout = n / self._sample_rate + STREAM_FINISH_TIMEOUT
+        with stream:
+            finished = done.wait(timeout)  # closing the stream earlier would stop playback
         self._check_aborted()
+        if not finished:
+            raise RuntimeError("audio stream did not finish")
         if exc:
-            raise exc
+            raise exc[0]
         return recording
 
     def describe(self) -> str:
@@ -335,18 +371,14 @@ class SounddeviceIO:
     def abort(self) -> None:
         """Stop the running call from any thread (see :meth:`AudioIO.abort`).
 
-        ``self._aborted.set()``, then ``sounddevice.stop()``, which stops a running
-        ``sounddevice.playrec``/``rec`` (they then return early). :meth:`playrec` and
-        :meth:`rec` call :meth:`_check_aborted` before and after the sounddevice call;
-        :meth:`playrec_blocks` calls it before opening the stream and after it finished,
-        and its stream callback raises ``sounddevice.CallbackAbort`` (before writing the
+        Only ``self._aborted.set()`` (no ``sounddevice.stop()``, which raced with the
+        measurement thread over the same PortAudio stream, resonus-room Q-C10). Every call
+        runs on its own stream: :meth:`_check_aborted` before opening it and after it
+        finished; its callback raises ``sounddevice.CallbackAbort`` (before writing the
         block) once ``self._aborted`` is set. An abort takes precedence over an exception
-        from ``on_block``.
+        from ``on_block`` and over the finish timeout.
         """
         self._aborted.set()
-        import sounddevice
-
-        sounddevice.stop()
 
     def _check_aborted(self) -> None:
         """Raise ``MeasurementAborted("measurement stopped")`` if :meth:`abort` was called."""

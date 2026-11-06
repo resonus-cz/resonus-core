@@ -1,4 +1,5 @@
 import sys
+import types
 from dataclasses import fields
 
 import numpy as np
@@ -109,8 +110,7 @@ def test_toml_roundtrip_with_channels(tmp_path):
 
 
 @pytest.fixture
-def fake_sd(monkeypatch):
-    import types
+def fake_sd(monkeypatch, recording_streams):
 
     calls = {}
     rows = [
@@ -120,14 +120,10 @@ def fake_sd(monkeypatch):
          "max_output_channels": 4, "default_samplerate": 48000.0},
     ]  # fmt: skip
 
-    def playrec(data, **kw):
-        calls["playrec"] = kw
-        return np.zeros((len(data), len(kw["input_mapping"])))
-
     mod = types.SimpleNamespace(
+        **recording_streams(calls),
         query_devices=lambda device=None: rows if device is None else rows[device],
         query_hostapis=lambda: ({"name": "ALSA"},),
-        playrec=playrec,
         PortAudioError=RuntimeError,
     )
     monkeypatch.setitem(sys.modules, "sounddevice", mod)
@@ -147,10 +143,12 @@ def test_open_io_maps_devices_and_channels(fake_sd):
     io.playrec(np.ones(4))
     kw = fake_sd["playrec"]
     assert kw["device"] == (1, None)  # input device resolved by key, output default
-    assert kw["input_mapping"] == [2, 1, 4]  # measurement channels, then the reference
-    assert kw["output_mapping"] == [3]
+    # measurement channels, then the reference; output 3 (streams open up to the
+    # highest channel number and map inside the callback, Q-C10)
+    assert kw["channels"] == (4, 3)
+    assert "[2, 1, 4]" in io.describe() and "[3]" in io.describe()
     io = open_io(MeasurementSettings())
     io.playrec(np.ones(4))
-    assert fake_sd["playrec"]["device"] is None and fake_sd["playrec"]["input_mapping"] == [1]
+    assert fake_sd["playrec"]["device"] is None and fake_sd["playrec"]["channels"] == (1, 1)
     with pytest.raises(ValueError, match="not found"):
         open_io(MeasurementSettings(output_device="ALSA: nothing"))

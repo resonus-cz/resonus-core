@@ -31,7 +31,7 @@ class PortAudioError(Exception):
 
 
 @pytest.fixture
-def fake_sd(monkeypatch):
+def fake_sd(monkeypatch, recording_streams):
     calls = {}
 
     def query_devices(device=None):
@@ -60,21 +60,12 @@ def fake_sd(monkeypatch):
 
         return checker
 
-    def playrec(data, **kw):
-        calls["playrec"] = kw
-        return np.zeros((len(data), len(kw["input_mapping"])))
-
-    def rec(frames, **kw):
-        calls["rec"] = kw
-        return np.zeros((frames, len(kw["mapping"])))
-
     mod = types.SimpleNamespace(
+        **recording_streams(calls),
         query_devices=query_devices,
         query_hostapis=lambda: HOSTAPIS,
         check_input_settings=check("input"),
         check_output_settings=check("output"),
-        playrec=playrec,
-        rec=rec,
         PortAudioError=PortAudioError,
     )
     monkeypatch.setitem(sys.modules, "sounddevice", mod)

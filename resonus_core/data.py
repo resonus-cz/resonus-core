@@ -221,11 +221,158 @@ class BandResults:
         object.__setattr__(self, "flags", flags_tuple)
 
 
-Result = ImpulseResponse | FrequencyResponse | BandResults
+@dataclass(frozen=True)
+class LevelHistory:
+    """Levels over time, e.g. the log of a sound level meter (D-S1, Q-C8).
+
+    Parameters
+    ----------
+    time
+        Times in s from ``start_utc``, 1-D, finite, strictly increasing.
+    levels
+        Quantity name -> values (1-D float, length = ``time.size``; NaN = missing,
+        +-inf allowed), e.g. ``{"LAF": ..., "LCF": ...}``. At least one quantity.
+    units
+        Quantity name -> unit, e.g. ``{"LAF": "dB"}``; same keys as ``levels``.
+    metadata
+        Provenance.
+    markers
+        ``(time_s, label)`` pairs (times finite, in s from ``start_utc``), e.g. the
+        meter's markers; may be empty.
+    start_utc
+        ISO 8601 UTC time of ``time == 0``; ``""`` if unknown.
+
+    Raises
+    ------
+    ValueError
+        On inconsistent shapes or keys (see ``__post_init__``).
+    """
+
+    time: NDArray[np.float64]
+    levels: dict[str, NDArray[np.float64]]
+    units: dict[str, str]
+    metadata: Metadata
+    markers: tuple[tuple[float, str], ...] = ()
+    start_utc: str = ""
+
+    def __post_init__(self) -> None:
+        """Validate and normalize the fields.
+
+        - ``time = _as_1d(time, np.float64)``; all finite and strictly increasing, else
+          ``ValueError("time must be finite and strictly increasing")``.
+        - ``levels``: non-empty (``"levels must be non-empty"``); keys equal to the keys
+          of ``units`` (``"levels and units keys must match"``); each value
+          ``_as_1d(v, np.float64)`` of length ``time.size``
+          (``f"levels[{name}] length must match time"``); stored as a new dict.
+          ``units`` stored as a new ``dict[str, str]``.
+        - ``markers = tuple((float(t), str(label)) for t, label in markers)``; every
+          time finite, else ``ValueError("marker times must be finite")``.
+        - ``start_utc = str(start_utc)``.
+
+        Raises
+        ------
+        ValueError
+            If any rule is violated.
+        """
+        # Validate time
+        time_arr = _as_1d(self.time, np.float64)
+        if not np.all(np.isfinite(time_arr)) or not np.all(np.diff(time_arr) > 0):
+            raise ValueError("time must be finite and strictly increasing")
+        # Validate levels
+        if not self.levels:
+            raise ValueError("levels must be non-empty")
+        if set(self.levels.keys()) != set(self.units.keys()):
+            raise ValueError("levels and units keys must match")
+        levels_dict: dict[str, NDArray[np.float64]] = {}
+        for name, v in self.levels.items():
+            arr = _as_1d(v, np.float64)
+            if arr.size != time_arr.size:
+                raise ValueError(f"levels[{name}] length must match time")
+            levels_dict[name] = arr
+        # Normalize units
+        units_dict = {k: str(v) for k, v in self.units.items()}
+        # Normalize markers
+        markers_tuple = tuple((float(t), str(label)) for t, label in self.markers)
+        for t, _ in markers_tuple:
+            if not np.isfinite(t):
+                raise ValueError("marker times must be finite")
+        # Normalize start_utc
+        start_utc_str = str(self.start_utc)
+        # Set attributes
+        object.__setattr__(self, "time", time_arr)
+        object.__setattr__(self, "levels", levels_dict)
+        object.__setattr__(self, "units", units_dict)
+        object.__setattr__(self, "markers", markers_tuple)
+        object.__setattr__(self, "start_utc", start_utc_str)
+
+
+@dataclass(frozen=True)
+class TimeSignal:
+    """A recorded signal, e.g. background noise in Pa (resonus-room Q-C9).
+
+    Unlike :class:`ImpulseResponse` it is not a system response: apps store recordings
+    with this kind instead of an impulse response with a role key.
+
+    Parameters
+    ----------
+    data
+        Samples, 1-D, non-empty (one channel per result, as :class:`ImpulseResponse`);
+        NaN allowed.
+    sample_rate
+        Sample rate in Hz, > 0.
+    unit
+        Unit of the samples, e.g. ``"Pa"`` or ``"FS"`` (digital full scale).
+    metadata
+        Provenance.
+    start_utc
+        ISO 8601 UTC time of the first sample; ``""`` if unknown.
+
+    Raises
+    ------
+    ValueError
+        ``"expected a non-empty 1-D array"`` (from ``_as_1d``), ``"sample_rate must be
+        positive"``.
+    """
+
+    data: NDArray[np.float64]
+    sample_rate: float
+    unit: str
+    metadata: Metadata
+    start_utc: str = ""
+
+    def __post_init__(self) -> None:
+        """Validate and normalize the fields.
+
+        ``data = _as_1d(data, np.float64)``; ``sample_rate <= 0`` gives
+        ``ValueError("sample_rate must be positive")``; store ``data``, ``float(
+        sample_rate)``, ``str(unit)``, ``str(start_utc)`` (``object.__setattr__``).
+        """
+        data_arr = _as_1d(self.data, np.float64)
+        if self.sample_rate <= 0:
+            raise ValueError("sample_rate must be positive")
+        object.__setattr__(self, "data", data_arr)
+        object.__setattr__(self, "sample_rate", float(self.sample_rate))
+        object.__setattr__(self, "unit", str(self.unit))
+        object.__setattr__(self, "start_utc", str(self.start_utc))
+
+    @property
+    def time(self) -> NDArray[np.float64]:
+        """Time axis in s from the first sample: ``arange(data.size) / sample_rate``."""
+        return np.arange(self.data.size) / self.sample_rate
+
+    @property
+    def duration(self) -> float:
+        """Length in s, ``data.size / sample_rate``."""
+        return self.data.size / self.sample_rate
+
+
+Result = ImpulseResponse | FrequencyResponse | BandResults | LevelHistory | TimeSignal
 _KINDS: dict[str, type] = {
     "ImpulseResponse": ImpulseResponse,
     "FrequencyResponse": FrequencyResponse,
     "BandResults": BandResults,
+    "LevelHistory": LevelHistory,
+    "TimeSignal": TimeSignal,
 }
 
 
@@ -274,6 +421,13 @@ def save(path: str | Path, result: Result) -> None:
             for name in result.values:
                 group.create_dataset(name, data=result.values[name])
             return
+        if isinstance(result, TimeSignal):
+            h5.attrs["unit"] = result.unit
+            h5.attrs["sample_rate"] = result.sample_rate
+            h5.attrs["start_utc"] = result.start_utc
+            h5.create_dataset("data", data=result.data)
+        if isinstance(result, LevelHistory):
+            _save_level_history(h5, result)
 
 
 def load(path: str | Path) -> Result:
@@ -297,6 +451,8 @@ def load(path: str | Path) -> Result:
         meta_dict = json.loads(h5.attrs["metadata"])
         meta_dict["standards"] = tuple(meta_dict["standards"])
         meta = Metadata(**meta_dict)
+        if kind == "LevelHistory":
+            return _load_level_history(h5, meta)
         if kind == "BandResults":
             return BandResults(
                 int(h5.attrs["fraction"]),
@@ -310,7 +466,49 @@ def load(path: str | Path) -> Result:
         unit = str(h5.attrs["unit"])
         if kind == "ImpulseResponse":
             return ImpulseResponse(h5["data"][()], float(h5.attrs["sample_rate"]), unit, meta)
+        if kind == "TimeSignal":
+            return TimeSignal(
+                h5["data"][()],
+                float(h5.attrs["sample_rate"]),
+                unit,
+                meta,
+                str(h5.attrs["start_utc"]),
+            )
         return FrequencyResponse(h5["frequency"][()], h5["values"][()], unit, meta)
+
+
+def _save_level_history(h5: h5py.File, result: LevelHistory) -> None:
+    """Write the ``LevelHistory`` items (docs/FILE_FORMAT.md, kind ``LevelHistory``).
+
+    Attributes ``quantities`` (JSON list of the level names, in order), ``units`` (JSON
+    object), ``markers`` (JSON list of ``[time_s, label]``), ``start_utc`` (string);
+    dataset ``time``; group ``levels`` with one dataset per quantity.
+    """
+    # Quantities and units
+    h5.attrs["quantities"] = json.dumps(list(result.levels))
+    h5.attrs["units"] = json.dumps(result.units)
+    # Markers
+    h5.attrs["markers"] = json.dumps([[t, label] for t, label in result.markers])
+    # Start UTC
+    h5.attrs["start_utc"] = result.start_utc
+    # Time dataset
+    h5.create_dataset("time", data=result.time)
+    # Levels group
+    levels_grp = h5.create_group("levels")
+    for name, arr in result.levels.items():
+        levels_grp.create_dataset(name, data=arr)
+
+
+def _load_level_history(h5: h5py.File, meta: Metadata) -> LevelHistory:
+    """Read what :func:`_save_level_history` wrote (markers back to tuples)."""
+    quantities = json.loads(h5.attrs["quantities"])
+    units = json.loads(h5.attrs["units"])
+    markers_json = json.loads(h5.attrs["markers"])
+    markers = tuple((float(t), str(label)) for t, label in markers_json)
+    start_utc = str(h5.attrs["start_utc"])
+    time_arr = h5["time"][()]
+    levels_dict = {name: h5["levels"][name][()] for name in quantities}
+    return LevelHistory(time_arr, levels_dict, units, meta, markers, start_utc)
 
 
 def _as_1d(a: ArrayLike, dtype: type) -> NDArray[Any]:

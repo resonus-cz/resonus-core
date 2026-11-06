@@ -3,6 +3,56 @@
 Semantic versioning: patch = fixes, minor = additions, major = breaking API changes.
 Apps depend on a pinned tag; upgrading is a deliberate change in the app.
 
+## 0.11.1 (2026-11-06)
+
+- Comments, docstrings and docs only: internal references removed, so the release can
+  be published. No change to the code.
+
+## 0.11.0 (2026-11-06)
+
+- **Stop no longer hangs the audio backend** (resonus-room Q-C10): `SounddeviceIO.playrec`
+  and `rec` run on their own `sounddevice.Stream` / `InputStream` (as `playrec_blocks`),
+  whose callback ends the stream at the next block once `abort()` was called; `abort()`
+  only sets the flag (it no longer calls `sounddevice.stop()` from another thread, which
+  raced with the measurement thread over the same PortAudio stream). Recordings pass
+  through float32 (lossless for audio interfaces up to 24 bit). A stream that does not
+  finish within the signal length plus `STREAM_FINISH_TIMEOUT` (10 s) raises
+  `RuntimeError("audio stream did not finish")` instead of hanging.
+- `data.TimeSignal` (resonus-room Q-C9): a recorded signal (1-D samples, sample rate,
+  unit, metadata, `start_utc`), kind `"TimeSignal"` in the HDF5 format
+  (docs/FILE_FORMAT.md); apps store recordings with it instead of an `ImpulseResponse`
+  with a role key.
+- `gui.layout` and `gui.overlays` (resonus-room Q-C6): the window layout of the Re:sonus
+  apps (header brand and centred title, ribbon of titled groups, tab panel, `APP_CSS`)
+  and pop-up panels over plots (tables, findings; nearly opaque `resonus-overlay`, as wide
+  as the content, height capped), moved from resonus-room and the app template's skeleton.
+
+## 0.10.0 (2026-11-05)
+
+Level calibration with an acoustic calibrator or pistonphone (D-C1), the method of
+resonus-meter.
+
+- `calibration.propose(samples, sample_rate, frequency, calibrator_level_db, ...)`: offset
+  C (`L_p = L_FS + C`) from a raw capture of the calibrator tone (tone search, lock-in,
+  quality checks; clipping at `|x| >= 1 - 2**-15`, the stack's value), with the optional ambient and adjustment corrections of IEC
+  61672-3:2013 10.2 / 9.1; `to_pascal`.
+- `CalibrationRecord`, `CalibrationStore`: append-only `calibrations.toml` history per
+  input (device id, channel), the resonus-meter file format (schema version 1) with the
+  two correction fields added.
+- Style tokens move to the data file `assets/style_tokens.toml` (D-T1), shared with the
+  Rust apps; `style.load_tokens(path, variant)` reads and checks such a file, with an
+  optional dark variant (`style.LIGHT`, `style.DARK`, `mpl_rc(dark=True)`,
+  `add_brand(fig, dark=True)`). Titles, legend and other text now use `axes_color`
+  (they were matplotlib's default black).
+- **Changed colours** (D-T1): trace 4 is Orange 4 `#e66100` (was Orange 3); Dark 3 is no
+  longer a trace colour but the new token `neutral_color`, so `TRACE_COLORS` has 7
+  entries (was 8) and Yellow 5 is last. Apps that used `TRACE_COLORS[7]` use
+  `TOKENS["neutral_color"]`.
+- `meter_session.read_session`: reader for resonus-meter bundles (`splmeter-session`
+  1.x) into arrays, `BandResults` and `Metadata` (D-S1). New dependency PyYAML.
+- `data.LevelHistory`: new result kind for levels over time (HDF5 kind `LevelHistory`,
+  format version unchanged), e.g. `MeterSession.level_history()` (Q-C8).
+
 ## 0.9.0 (2026-11-05)
 Panels side by side (resonus-room D-29: C50/C80 above D50 and Ts).
 

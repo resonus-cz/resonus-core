@@ -35,7 +35,7 @@ Python ≥ 3.12; GTK 4, libadwaita, PortAudio and the GObject introspection head
 
 Use from an app (pinned tag):
 
-    dependencies = ["resonus-core @ git+https://github.com/resonus-cz/resonus-core@v0.9.0"]
+    dependencies = ["resonus-core @ git+https://github.com/resonus-cz/resonus-core@v0.11.1"]
 
 Example: [examples/ir_measurement.ipynb](examples/ir_measurement.ipynb) measures an
 impulse response on the simulated device.

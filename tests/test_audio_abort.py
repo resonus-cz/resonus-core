@@ -1,8 +1,6 @@
 """AudioIO.abort: stop a running play/record call (resonus-room D-22)."""
 
-import sys
 import threading
-import types
 
 import numpy as np
 import pytest
@@ -55,59 +53,7 @@ def test_exception_type():
 
 
 # ------------------------------------------------------------------ SounddeviceIO (mocked)
-@pytest.fixture
-def fake_sd(monkeypatch):
-    """playrec/rec that run a hook while 'playing'; stop() counts its calls."""
-    calls = {"stop": 0, "playrec": 0, "rec": 0, "during": None}
-
-    def playrec(data, **kw):
-        calls["playrec"] += 1
-        if calls["during"]:
-            calls["during"]()
-        return np.zeros((len(data), len(kw["input_mapping"])))
-
-    def rec(frames, **kw):
-        calls["rec"] += 1
-        if calls["during"]:
-            calls["during"]()
-        return np.zeros((frames, len(kw["mapping"])))
-
-    def stop():
-        calls["stop"] += 1
-
-    mod = types.SimpleNamespace(playrec=playrec, rec=rec, stop=stop)
-    monkeypatch.setitem(sys.modules, "sounddevice", mod)
-    return calls
-
-
-def test_sounddevice_abort_stops_running_call(fake_sd):
-    io = SounddeviceIO(FS)
-    assert io.playrec(np.ones(3)).shape == (3, 1)  # not aborted
-    fake_sd["during"] = io.abort  # the user presses Stop while it plays
-    with pytest.raises(MeasurementAborted, match="measurement stopped"):
-        io.playrec(np.ones(3))
-    assert fake_sd["stop"] == 1  # sounddevice.stop() ends the blocking call
-
-
-def test_sounddevice_abort_before_calls(fake_sd):
-    io = SounddeviceIO(FS)
-    io.abort()
-    with pytest.raises(MeasurementAborted):
-        io.playrec(np.ones(3))
-    with pytest.raises(MeasurementAborted):
-        io.rec(3)
-    assert fake_sd["playrec"] == 0 and fake_sd["rec"] == 0  # nothing played
-
-
-def test_sounddevice_abort_during_rec(fake_sd):
-    io = SounddeviceIO(FS)
-    fake_sd["during"] = io.abort
-    with pytest.raises(MeasurementAborted):
-        io.rec(3)
-
-
 def test_sounddevice_stream_abort_from_other_thread(fake_stream, monkeypatch):
-    sys.modules["sounddevice"].stop = lambda: None
     io = SounddeviceIO(FS)
     first = threading.Event()
     blocks = []
@@ -129,7 +75,6 @@ def test_sounddevice_stream_abort_from_other_thread(fake_stream, monkeypatch):
 
 
 def test_sounddevice_stream_abort_beats_block_error(fake_stream):
-    sys.modules["sounddevice"].stop = lambda: None
     io = SounddeviceIO(FS)
 
     def on_block(_b):
@@ -141,7 +86,6 @@ def test_sounddevice_stream_abort_beats_block_error(fake_stream):
 
 
 def test_sounddevice_stream_abort_before(fake_stream):
-    sys.modules["sounddevice"].stop = lambda: None
     io = SounddeviceIO(FS)
     io.abort()
     with pytest.raises(MeasurementAborted):

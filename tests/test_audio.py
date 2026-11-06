@@ -105,49 +105,15 @@ def test_simulated_describe():
 # ------------------------------------------------------------------ SounddeviceIO (mocked)
 @pytest.fixture
 def fake_sd(monkeypatch):
-    calls = {}
-
-    def playrec(data, **kw):
-        calls["playrec"] = (np.array(data), kw)
-        return np.full((len(data), len(kw["input_mapping"])), 0.25)
-
-    def rec(frames, **kw):
-        calls["rec"] = (frames, kw)
-        return np.full((frames, len(kw["mapping"])), 0.5)
+    """Only query_devices: playrec and rec run on streams since 0.11.0 (test_audio_stop.py)."""
 
     def query_devices(device=None):
         if device is None:
             return [{"name": "dev0"}, {"name": "dev1"}]
         return {"name": f"card {device}"}
 
-    mod = types.SimpleNamespace(playrec=playrec, rec=rec, query_devices=query_devices)
+    mod = types.SimpleNamespace(query_devices=query_devices)
     monkeypatch.setitem(sys.modules, "sounddevice", mod)
-    return calls
-
-
-def test_sounddevice_playrec_mapping(fake_sd):
-    io = SounddeviceIO(FS, device=3, input_channels=(1, 2), output_channels=(3,))
-    assert (io.sample_rate, io.n_inputs, io.n_outputs) == (FS, 2, 1)
-    y = io.playrec(np.ones(10))
-    assert y.shape == (10, 2) and y.dtype == np.float64
-    data, kw = fake_sd["playrec"]
-    assert data.shape == (10, 1)
-    assert kw["input_mapping"] == [1, 2] and kw["output_mapping"] == [3]
-    assert kw["samplerate"] == FS and kw["device"] == 3 and kw["blocking"] is True
-
-
-def test_sounddevice_1d_signal_broadcast(fake_sd):
-    io = SounddeviceIO(FS, output_channels=(1, 2))
-    io.playrec(np.arange(4.0))
-    data, _ = fake_sd["playrec"]
-    np.testing.assert_array_equal(data, np.column_stack([np.arange(4.0)] * 2))
-
-
-def test_sounddevice_rec(fake_sd):
-    y = SounddeviceIO(FS, input_channels=(2,)).rec(5)
-    assert y.shape == (5, 1)
-    frames, kw = fake_sd["rec"]
-    assert frames == 5 and kw["mapping"] == [2]
 
 
 def test_sounddevice_describe_and_devices(fake_sd):

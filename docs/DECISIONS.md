@@ -51,6 +51,68 @@ first recorded in the planning notes (2026-11-02) and copied here unchanged in s
   from the visible lines; apps re-apply visibility after `set_trace`, which rebuilds the
   legend with all lines.
 
+## D-C1: Level calibration with the method of resonus-meter (user, 2026-11-05)
+- Date / status: 2026-11-05, user decision (resonus-room STI work package item 1:
+  "identically implemented in Python into resonus-core"); tasks 022a/b.
+- Decision: `calibration` ports resonus-meter's method unchanged: tone search on the first
+  second, lock-in on whole seconds, its thresholds and failure messages, and its
+  append-only `calibrations.toml` (schema version 1, readable by both apps). This replaces
+  the band filter of PLAN item 11: the lock-in rejects noise and hum better, and both
+  apps then give the same offset. Numerical check of the method (review 2026-11-05):
+  level error < 0.005 dB within ±3 % of the nominal frequency.
+- Added over the meter: two optional corrections in dB, each with its source as text:
+  ambient (IEC 61672-3:2013 10.2; per IEC 60942:2017 5.1.5 / Table 1 only class LS/M and
+  1/M pistonphones need one, for static pressure, from their instruction manual) and
+  adjustment (IEC 61672-3:2013 9.1, the manufacturer's data for the
+  calibrator-microphone combination). `C = L_cal + dL_ambient + dL_adjustment - L_tone`.
+  Older meter versions ignore the extra keys.
+- Thresholds (8 s, ±3 %, -60 dB FS, 20 dB, 0.1 dB) are the meter's design choices, not
+  normative. Clipping: `|x| >= 1 - 2**-15` (the top code of a 16-bit converter), one value
+  for the whole stack (user, 2026-11-05; resonus-room and resonus-meter use it too; the
+  meter used 0.999 before).
+- Profiles: (device id, zero-based channel); each app keeps its own store in the same
+  format (device ids differ between cpal and PortAudio).
+
+## D-T1: Style tokens as a data file shared with the Rust apps (user, 2026-11-05)
+- Date / status: 2026-11-05, user decision (resonus-meter review V5).
+- Decision: the plot style tokens (font family, trace colours, sizes and colours) live in
+  `resonus_core/assets/style_tokens.toml` (schema version 1; unknown keys ignored, a
+  newer version rejected). `style` reads it at import, so `TOKENS`, `TRACE_COLORS` and
+  `FONT_FAMILY` keep their names and values. Rust apps vendor the file from a pinned
+  resonus-core tag, with a test comparing the copy to that tag, so no value is
+  duplicated by hand.
+- Colours (user, 2026-11-05, on a proposal): GNOME HIG palette
+  (developer.gnome.org/hig/reference/palette.html, verified 2026-11-05) and the libadwaita
+  1.10 view background (`--view-bg-color`: light `#ffffff`, dark `#1d1d20`). Rule: each
+  trace keeps its hue and reaches 3:1 on its background (WCAG 2.1 SC 1.4.11, non-text
+  contrast); the greys match the contrast of the light style. Hence light Orange 3 ->
+  Orange 4; Yellow 5 (2.2:1 on white, no tone of yellow reaches 3:1) moves last; Dark 3
+  leaves the trace list for the new token `neutral_color` (averages, references), so
+  `TRACE_COLORS` has 7 entries (was 8). Dark style (optional `[dark]` table of the same
+  file, schema still version 1): Purple 2 for Purple 3, grid Dark 3, axes and neutral
+  Light 3, brand Light 5, background `#1d1d20`. `style.LIGHT`, `style.DARK`,
+  `mpl_rc(dark=...)`. Following the system style in a GUI is each app's job.
+
+## D-S1: Reader for resonus-meter bundles in resonus-core (user, 2026-11-05)
+- Date / status: 2026-11-05, user decision on resonus-meter review D1 ("as proposed");
+  details proposed for the user's review.
+- Decision: the meter's bundle (`splmeter-session` 1.x, resonus-meter
+  `docs/FILE_FORMAT.md`) stays its canonical format; `resonus_core.meter_session`
+  reads it (`read_session`) into numpy arrays and the common types: band levels as
+  `BandResults` (summary or one segment, quantity `LZeq`, unit dB), provenance as
+  `Metadata`. The Rust app needs no HDF5 library.
+- Time histories: new kind `LevelHistory` (times, named level columns, markers, start
+  time; HDF5 kind, `format_version` stays 1 as a new kind), from `MeterSession.level_history()`
+  (user, 2026-11-05, Q-C8 "implement according to the proposal"). Segment
+  values stay arrays on `MeterSession`.
+- New dependency PyYAML (MIT; pinned 6.0.3, stubs types-PyYAML 6.0.12.20261103 in dev):
+  the front matter holds user text (names, tags, notes) in YAML double-quoted strings,
+  which a hand-written subset parser would get wrong. `yaml.safe_load` only.
+- `Metadata.standards` stays empty: the bundle names no standard, and the meter's
+  compliance matrix has open rows (IEC 61672-1 Table 3, IEC 61260-1 class limits).
+- `software` "SPL Meter 0.1.0" is split at the last space when the last word starts with
+  a digit; the meter still writes its old name (reported to the user).
+
 ## D-25: License AGPL-3.0-only for resonus-room and resonus-core (user, 2026-11-05)
 - Before publishing both repos on GitHub. User goals: own and third-party commercial use
   allowed; selling allowed as long as the code stays available. GPL-3.0 already keeps

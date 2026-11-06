@@ -12,7 +12,7 @@ acoustics software, export WAV or CSV.
 |---|---|---|
 | `format` | string | always `"resonus"`; files without it are rejected |
 | `format_version` | integer | `1`; readers reject files with a newer version |
-| `kind` | string | `"ImpulseResponse"`, `"FrequencyResponse"` or `"BandResults"` |
+| `kind` | string | `"ImpulseResponse"`, `"FrequencyResponse"`, `"BandResults"`, `"LevelHistory"` or `"TimeSignal"` |
 | `metadata` | string (JSON) | provenance, see below |
 
 ### `metadata` (JSON object, `resonus_core.data.Metadata`)
@@ -70,6 +70,33 @@ Measured impulse responses are causal: `data[0]` is t = 0 of the deconvolution
 | `flags` | attribute | string (JSON list of lists) | per band: warning flags (strings); may be empty |
 | `center` | dataset | float64, 1-D | exact band centre frequencies in Hz |
 | `values/<name>` | dataset in group `values` | float64, 1-D | one value per band; NaN = not available |
+
+## Kind `LevelHistory`
+
+Levels over time, e.g. the log of a sound level meter (`resonus_core.data.LevelHistory`;
+resonus-meter bundles convert with `meter_session.read_session(...).level_history()`).
+
+| Item | HDF5 object | Type | Content |
+|---|---|---|---|
+| `quantities` | attribute | string (JSON list) | names of the level columns, in order, e.g. `["LAF", "LCF", "LZF"]` |
+| `units` | attribute | string (JSON object) | quantity name -> unit, e.g. `"dB"` |
+| `markers` | attribute | string (JSON list) | `[time_s, label]` pairs; may be empty |
+| `start_utc` | attribute | string | ISO 8601 UTC time of `time = 0`; empty if unknown |
+| `time` | dataset | float64, 1-D | times in s from `start_utc`, strictly increasing |
+| `levels/<name>` | dataset in group `levels` | float64, 1-D | one value per time; NaN = missing |
+
+## Kind `TimeSignal`
+
+A recorded signal, e.g. background noise in Pa (`resonus_core.data.TimeSignal`, since
+0.11.0; resonus-room Q-C9). Earlier apps stored recordings as `ImpulseResponse` with a
+role in `metadata.extra`.
+
+| Item | HDF5 object | Type | Content |
+|---|---|---|---|
+| `unit` | attribute | string | unit of the samples, e.g. `"Pa"`, `"FS"` (digital full scale) |
+| `sample_rate` | attribute | number | sample rate in Hz |
+| `start_utc` | attribute | string | ISO 8601 UTC time of the first sample; empty if unknown |
+| `data` | dataset | float64, 1-D | samples; sample `n` is at time `n / sample_rate` |
 
 ## Reading without resonus-core
 
